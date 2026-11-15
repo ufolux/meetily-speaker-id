@@ -4,7 +4,11 @@
     <p><b>A local, privacy-first AI meeting assistant that knows who said what.</b></p>
 </div>
 
-This is a fork of [Meetily](https://github.com/Zackriya-Solutions/meetily) that adds **speaker identification** to the open-source desktop app. Meetings are still captured, transcribed and summarised on your own machine. Every transcript line is now also labelled with its speaker.
+This is a fork of [Meetily](https://github.com/Zackriya-Solutions/meetily), the open-source desktop app. Meetings are still captured, transcribed and summarised on your own machine. This fork adds:
+
+- **[Speaker identification](#speaker-identification):** every transcript line is labelled with its speaker, and you can rename speakers.
+- **[Recording playback](#recording-playback):** play a meeting's recording while the transcript follows along, and click any line to jump to that moment.
+- **[Search](#search-in-transcripts-and-summaries):** find text in a meeting's transcript and its AI summary.
 
 ## Speaker identification
 
@@ -32,6 +36,22 @@ Without the voice model, recordings that capture system audio are still split in
 - Speaker names reset when a meeting is re-transcribed, because the speaker numbering is recalculated.
 - Live speaker labelling has not yet been validated with real devices across platforms.
 
+## Recording playback
+
+Each meeting's page has a player above the transcript.
+
+- **Play along.** Play/pause, skip back or forward 10 seconds, drag the seek bar, and change speed from 0.75× to 2×.
+- **Transcript follows.** The line being played is highlighted and kept in view. Scroll away to read something else; following resumes a few seconds later.
+- **Click to jump.** Click any line's text or timestamp to move the recording to that point. Playback doesn't start until you press Play, so you can line it up first. Selecting text to copy it doesn't move the recording.
+- **Private.** The recording is played straight from the meeting's folder on disk; the app is only given access to that one file.
+
+Meetings without a saved recording show no player. Recordings in a format the built-in player can't decode (for example some `.ogg` or `.wma` imports) show a message instead.
+
+## Search in transcripts and summaries
+
+- **Transcript.** Click 🔍 at the top of the transcript, or press **⌘F** (Ctrl+F on Windows/Linux). Every match is highlighted, the current one in orange, with a count such as `3/12`. **Enter** goes to the next match, **Shift+Enter** to the previous one, and **Esc** closes the search. Long transcripts are loaded in full first, so no match is missed. Search ignores case and works with Chinese and other non-Latin text.
+- **Summary.** Click 🔍 at the top of the summary, or press **⌘F** while working in the summary. Matches are highlighted without changing the summary, and the results update as you edit or regenerate it. A phrase split across different formatting (for example half of it in bold) isn't found.
+
 ## Other features
 
 These features come from Meetily itself:
@@ -44,26 +64,47 @@ These features come from Meetily itself:
 
 ## Building from source
 
-This fork does not publish installers; build it yourself. You need Rust, Node.js and pnpm 9.15.9.
+This fork does not publish installers; build it yourself on the platform you want to run it on (Tauri doesn't cross-compile installers). You need Rust, Node.js, pnpm 9.15.9 and CMake, plus the platform packages in [BUILDING.md](docs/BUILDING.md).
 
-1. Build and stage the `llama-helper` sidecar as described in [first-run sidecar setup](docs/BUILDING.md#first-run-sidecar-setup).
-2. From `frontend/`, install dependencies and run the app:
+### Let an AI coding agent build it
+
+The repository ships a [`production-build`](.claude/skills/production-build/SKILL.md) skill that walks an agent such as Claude Code through a release build on **macOS, Windows or Linux**: staging the `llama-helper` sidecar, the right build command for the platform, the known build errors and their fixes, checking the output, and (only when you ask) installing over your current Meetily after backing up its database.
+
+Open the repository in the agent and ask, for example:
+
+> Build a production version of Meetily for this machine.
+
+> Build the Windows installer and install it over my current Meetily.
+
+In Claude Code you can also run `/production-build`. Other agents can be pointed at the skill file directly, or at [AGENTS.md](AGENTS.md), which links to it. The macOS steps have been run end to end in this fork; the Windows and Linux steps follow the project's CI workflows and haven't been run in this fork yet.
+
+### Build it yourself
+
+1. Build and stage the `llama-helper` sidecar from the repository root (on Windows, set the variable with `$env:CMAKE_DISABLE_FIND_PACKAGE_OpenSSL="TRUE"` and copy `llama-helper.exe` to `llama-helper-<host-triple>.exe`):
+
+   ```bash
+   CMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE cargo build -p llama-helper --release
+   ```
+
+   ```bash
+   mkdir -p frontend/src-tauri/binaries && cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-$(rustc -vV | sed -n 's/host: //p')
+   ```
+
+2. From `frontend/`, install dependencies:
 
    ```bash
    pnpm install --frozen-lockfile
    ```
 
-   ```bash
-   pnpm run tauri:dev
-   ```
+3. Run the app in development mode with `pnpm run tauri:dev`, or make a production build:
 
-3. For a production build, run `pnpm run tauri:build`.
+   | Platform | Command (from `frontend/`) | Output (under the repository-root `target/release/bundle/`) |
+   | --- | --- | --- |
+   | macOS | `CARGO_PROFILE_RELEASE_STRIP=false pnpm run tauri:build` | `macos/meetily.app`, `dmg/*.dmg` |
+   | Windows | `pnpm run tauri:build` | `nsis/*-setup.exe`, `msi/*.msi` |
+   | Linux | `NO_STRIP=true pnpm run tauri:build` | `deb/*.deb`, `appimage/*.AppImage` |
 
-See [BUILDING.md](docs/BUILDING.md), [Building on Linux](docs/building_in_linux.md) and [GPU acceleration](docs/GPU_ACCELERATION.md) for platform prerequisites. If `llama-helper` fails to compile on macOS with an `X509_NAME` error, Homebrew's OpenSSL 4 is being picked up. Build against OpenSSL 3 instead:
-
-```bash
-OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 cargo build -p llama-helper
-```
+   The build ends with an error about `TAURI_SIGNING_PRIVATE_KEY`. That only affects the updater signature (it needs the upstream project's key); the app and installers are already built. See the [skill](.claude/skills/production-build/SKILL.md) for why the macOS and Linux variables are needed, GPU options and other troubleshooting, and [GPU acceleration](docs/GPU_ACCELERATION.md) for Whisper acceleration.
 
 > **Sharing data with an existing install:** this build uses the same app ID and database as Meetily. On first launch it adds a `meeting_speakers` table to your meetings database, and after that an older Meetily build will refuse to open the database. Back up the `meeting_minutes.sqlite` file in the app data folder first if you plan to switch back.
 
@@ -73,7 +114,7 @@ OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 cargo build -p llama-helper
 - **Batch:** overlapping 3-second windows (one every 1.5 s) are voiceprinted and grouped across the whole recording by average similarity. Segments are cut where the speaker changes, and each piece is transcribed separately.
 - **Storage:** `transcripts.speaker` stores a stable speaker ID (`me`, `others` or `speaker_N`). Custom names live in a separate `meeting_speakers` table, so renaming never rewrites transcripts.
 
-The code lives in [`frontend/src-tauri/src/speaker/`](frontend/src-tauri/src/speaker/). See [architecture](docs/architecture.md#speaker-identification) for details.
+The speaker code lives in [`frontend/src-tauri/src/speaker/`](frontend/src-tauri/src/speaker/). See [architecture](docs/architecture.md#speaker-identification) for details. Playback is served by [`audio/playback.rs`](frontend/src-tauri/src/audio/playback.rs) through Tauri's asset protocol; search runs entirely in the frontend.
 
 ## License and credits
 
