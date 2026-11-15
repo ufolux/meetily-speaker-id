@@ -26,7 +26,7 @@ Without the voice model, recordings that capture system audio are still split in
 
 ### Known limitations
 
-- The voice-matching thresholds were tuned on synthetic speech. Real meetings may occasionally split one person in two (fix it with **merge**) or, more rarely, combine two similar voices.
+- The voice-matching thresholds were calibrated on one real two-person meeting. Meetings with more people, or with very similar voices, may occasionally split one person in two (fix it with **merge**) or combine two voices.
 - When two people talk at the same time, that speech gets a single label.
 - Imports and re-transcriptions work from the mixed recording, so they label speakers by voice only and never use **Me**.
 - Speaker names reset when a meeting is re-transcribed, because the speaker numbering is recalculated.
@@ -70,7 +70,7 @@ OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 cargo build -p llama-helper
 ## How it works
 
 - **Live:** the audio pipeline records microphone and system-audio energy for each speech segment and tags the segment with its dominant source. The audio itself is still mixed as before. Each segment's voiceprint is matched against the speakers heard so far, with matching kept separate for microphone and system audio.
-- **Batch:** short overlapping windows (1.5 s every 0.5 s) are voiceprinted and grouped across the whole recording. Segments are cut where the speaker changes, and each piece is transcribed separately.
+- **Batch:** overlapping 3-second windows (one every 1.5 s) are voiceprinted and grouped across the whole recording by average similarity. Segments are cut where the speaker changes, and each piece is transcribed separately.
 - **Storage:** `transcripts.speaker` stores a stable speaker ID (`me`, `others` or `speaker_N`). Custom names live in a separate `meeting_speakers` table, so renaming never rewrites transcripts.
 
 The code lives in [`frontend/src-tauri/src/speaker/`](frontend/src-tauri/src/speaker/). See [architecture](docs/architecture.md#speaker-identification) for details.
