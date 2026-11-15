@@ -212,3 +212,12 @@
     overflow: visible !important;
   }
 }
+/* Find-in-summary highlights (CSS Custom Highlight API) */
+::highlight(meetily-find) {
+  background-color: #fef08a;
+  color: #111827;
+}
+::highlight(meetily-find-current) {
+  background-color: #fdba74;
+  color: #111827;
+}

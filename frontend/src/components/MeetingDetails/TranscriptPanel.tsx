@@ -5,8 +5,13 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { SpeakersBar } from './SpeakersBar';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 import { SpeakerNames, fetchSpeakerNames, speakersInOrder } from '@/lib/speakers';
+import { activeSegmentIndex, findMatches, transcriptDisplayText } from '@/lib/text-search';
+import { useMeetingAudio } from '@/hooks/meeting-details/useMeetingAudio';
+import { AudioPlayerBar } from './AudioPlayerBar';
+import { FindBar } from './FindBar';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -25,6 +30,8 @@ interface TranscriptPanelProps {
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+  /** Loads all remaining pages (search and playback follow need every segment) */
+  onLoadAll?: () => Promise<void>;
 
   // Retranscription props
   meetingId?: string;
@@ -47,6 +54,7 @@ export function TranscriptPanel({
   totalCount,
   loadedCount,
   onLoadMore,
+  onLoadAll,
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
@@ -89,10 +97,88 @@ export function TranscriptPanel({
     };
   }, [meetingId, hasSpeakers, firstSegmentId]);
 
+  // Recording playback; the transcript follows the playing segment.
+  const audio = useMeetingAudio(meetingId, !isRecording);
+  const segmentStarts = useMemo(() => convertedSegments.map(seg => seg.timestamp), [convertedSegments]);
+  const activeIndex = audio.hasStarted ? activeSegmentIndex(segmentStarts, audio.currentTime) : -1;
+  const activeSegmentId = activeIndex >= 0 ? convertedSegments[activeIndex].id : null;
+  // Clicking a line only moves the playhead; playback state is unchanged.
+  const handleSeek = useCallback((seconds: number) => audio.seek(seconds), [audio.seek]);
+
+  useEffect(() => {
+    if (audio.hasStarted && hasMore) void onLoadAll?.();
+  }, [audio.hasStarted, hasMore, onLoadAll]);
+
+  // Search
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+  const [matchIndex, setMatchIndex] = useState(0);
+  const activeQuery = searchOpen ? deferredQuery.trim() : '';
+
+  const matches = useMemo(() => {
+    if (!activeQuery) return [];
+    const found: { segmentId: string; occurrence: number }[] = [];
+    for (const seg of convertedSegments) {
+      const count = findMatches(transcriptDisplayText(seg.text), activeQuery).length;
+      for (let occurrence = 0; occurrence < count; occurrence++) {
+        found.push({ segmentId: seg.id, occurrence });
+      }
+    }
+    return found;
+  }, [convertedSegments, activeQuery]);
+
+  useEffect(() => setMatchIndex(0), [activeQuery]);
+  useEffect(() => {
+    if (activeQuery && hasMore) void onLoadAll?.();
+  }, [activeQuery, hasMore, onLoadAll]);
+
+  const currentMatch = matches.length > 0 ? matches[Math.min(matchIndex, matches.length - 1)] : null;
+  const stepMatch = (delta: number) => {
+    if (matches.length === 0) return;
+    setMatchIndex(i => (Math.min(i, matches.length - 1) + delta + matches.length) % matches.length);
+  };
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setSearchFocusToken(t => t + 1);
+  }, []);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery('');
+  };
+
+  // Cmd/Ctrl+F opens transcript search unless focus is in the summary.
+  useEffect(() => {
+    if (isRecording) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f' || e.altKey || e.shiftKey) return;
+      const active = document.activeElement;
+      if (active instanceof Element && active.closest('[data-find-scope="summary"]')) return;
+      e.preventDefault();
+      openSearch();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isRecording, openSearch]);
+
+  const canSearch = !isRecording && convertedSegments.length > 0;
+
   return (
-    <div className="flex h-full min-w-0 w-full bg-white flex-col relative @container">
+    <div className="flex h-full min-w-0 w-full bg-white flex-col relative @container" data-find-scope="transcript">
       {/* Title area */}
-      <div className="p-4 border-b border-gray-200">
+      <div className="p-4 border-b border-gray-200 relative">
+        {canSearch && !searchOpen && (
+          <button
+            type="button"
+            onClick={openSearch}
+            title="Search transcript (⌘F)"
+            aria-label="Search transcript"
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        )}
         <TranscriptButtonGroup
           transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
           onCopyTranscript={onCopyTranscript}
@@ -102,6 +188,25 @@ export function TranscriptPanel({
           onRefetchTranscripts={onRefetchTranscripts}
         />
       </div>
+
+      {canSearch && searchOpen && (
+        <div className="border-b border-gray-200 px-3 py-2">
+          <FindBar
+            query={query}
+            onQueryChange={setQuery}
+            currentIndex={currentMatch ? Math.min(matchIndex, matches.length - 1) : -1}
+            total={matches.length}
+            onNext={() => stepMatch(1)}
+            onPrevious={() => stepMatch(-1)}
+            onClose={closeSearch}
+            placeholder="Search transcript"
+            busy={!!activeQuery && !!(hasMore || isLoadingMore)}
+            focusToken={searchFocusToken}
+          />
+        </div>
+      )}
+
+      {!isRecording && <AudioPlayerBar audio={audio} />}
 
       {meetingId && !isRecording && (
         <SpeakersBar
@@ -133,6 +238,11 @@ export function TranscriptPanel({
           onLoadMore={onLoadMore}
           speakerNames={speakerNames}
           onSpeakerClick={meetingId && !isRecording ? setEditingSpeaker : undefined}
+          activeSegmentId={activeSegmentId}
+          followActiveSegment={audio.isPlaying}
+          onSeek={audio.available ? handleSeek : undefined}
+          searchQuery={activeQuery}
+          currentMatch={currentMatch}
         />
       </div>
 

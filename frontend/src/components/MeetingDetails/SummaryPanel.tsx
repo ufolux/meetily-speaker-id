@@ -7,9 +7,11 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
-import { useEffect, useRef, useState, RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, RefObject } from 'react';
 import { toast } from 'sonner';
-import { Languages, ChevronDown } from 'lucide-react';
+import { Languages, ChevronDown, Search } from 'lucide-react';
+import { FindBar } from './FindBar';
+import { useDomTextSearch } from '@/hooks/meeting-details/useDomTextSearch';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { LanguagePickerPopover } from '@/components/LanguagePickerPopover';
@@ -213,6 +215,36 @@ export function SummaryPanel({
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
 
+  // Find in summary
+  const summaryContentRef = useRef<HTMLDivElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
+  const [query, setQuery] = useState('');
+  const canSearch = hasSummary && !isSummaryLoading;
+  const search = useDomTextSearch(summaryContentRef, query, searchOpen && canSearch);
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setSearchFocusToken(t => t + 1);
+  }, []);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery('');
+  };
+
+  // Cmd/Ctrl+F while focus is inside the summary panel searches the summary.
+  useEffect(() => {
+    if (!canSearch) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f' || e.altKey || e.shiftKey) return;
+      const active = document.activeElement;
+      if (!(active instanceof Element) || !active.closest('[data-find-scope="summary"]')) return;
+      e.preventDefault();
+      openSearch();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canSearch, openSearch]);
+
   const languageSlot = (
     <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
       <PopoverTrigger asChild>
@@ -242,9 +274,20 @@ export function SummaryPanel({
   );
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden h-full w-full @container">
+    <div className="flex-1 min-w-0 flex flex-col bg-white overflow-hidden h-full w-full @container" data-find-scope="summary">
       {/* Top-level actions — always visible, same pattern as TranscriptPanel */}
-      <div className="p-4 border-b border-gray-200">
+      <div className="p-4 border-b border-gray-200 relative">
+        {canSearch && !searchOpen && (
+          <button
+            type="button"
+            onClick={openSearch}
+            title="Search summary (⌘F while in the summary)"
+            aria-label="Search summary"
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        )}
         <div className="flex items-center justify-center w-full min-w-0 gap-2 flex-wrap">
           <div className="flex-shrink-0 min-w-0">
             <SummaryGeneratorButtonGroup
@@ -279,6 +322,22 @@ export function SummaryPanel({
         </div>
       </div>
 
+      {canSearch && searchOpen && (
+        <div className="border-b border-gray-200 px-3 py-2">
+          <FindBar
+            query={query}
+            onQueryChange={setQuery}
+            currentIndex={search.current}
+            total={search.total}
+            onNext={search.next}
+            onPrevious={search.previous}
+            onClose={closeSearch}
+            placeholder="Search summary"
+            focusToken={searchFocusToken}
+          />
+        </div>
+      )}
+
       {isSummaryLoading ? (
         <div className="flex items-center justify-center flex-1">
           <div className="text-center">
@@ -294,8 +353,8 @@ export function SummaryPanel({
           error={summaryError}
         />
       ) : (
-        <div className="flex-1 overflow-y-auto overflow-x-auto min-h-0">
-          <div className="p-6 w-full">
+        <div className="flex-1 overflow-y-auto overflow-x-auto min-h-0" data-find-scroll>
+          <div className="p-6 w-full" ref={summaryContentRef}>
             <BlockNoteSummaryView
               ref={summaryRef}
               summaryData={aiSummary}

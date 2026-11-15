@@ -10,6 +10,7 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { SpeakerNames, speakerColorClasses, speakerDisplayName } from "@/lib/speakers";
+import { findMatches, transcriptDisplayText } from "@/lib/text-search";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -41,7 +42,22 @@ export interface VirtualizedTranscriptViewProps {
     speakerNames?: SpeakerNames;
     /** When set, speaker chips are clickable (e.g. to rename) */
     onSpeakerClick?: (speakerId: string) => void;
+
+    // Playback and search
+    /** Segment currently playing; highlighted */
+    activeSegmentId?: string | null;
+    /** Keep the active segment in view (paused briefly while the user scrolls) */
+    followActiveSegment?: boolean;
+    /** When set, clicking a segment's timestamp or text moves the playhead there */
+    onSeek?: (seconds: number) => void;
+    /** Highlight occurrences of this text */
+    searchQuery?: string;
+    /** Current search match: segment id and occurrence index within that segment */
+    currentMatch?: { segmentId: string; occurrence: number } | null;
 }
+
+/** How long auto-follow stays paused after the user scrolls the transcript. */
+const FOLLOW_PAUSE_MS = 4000;
 
 // Threshold for enabling virtualization (below this, use simple rendering)
 const VIRTUALIZATION_THRESHOLD = 10;
@@ -57,17 +73,27 @@ function formatRecordingTime(seconds: number | undefined): string {
     return `[${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
 }
 
-// Helper function to remove filler words and repetitions
-function cleanStopWords(text: string): string {
-    const stopWords = ['uh', 'um', 'er', 'ah', 'hmm', 'hm', 'eh', 'oh'];
-
-    let cleanedText = text;
-    stopWords.forEach(word => {
-        const pattern = new RegExp(`\\b${word}\\b[,\\s]*`, 'gi');
-        cleanedText = cleanedText.replace(pattern, ' ');
+// Wraps search matches in <mark>; the current match gets a stronger color.
+function highlightText(text: string, query: string, currentOccurrence: number): React.ReactNode {
+    const ranges = findMatches(text, query);
+    if (ranges.length === 0) return text;
+    const parts: React.ReactNode[] = [];
+    let last = 0;
+    ranges.forEach(([start, end], i) => {
+        if (start > last) parts.push(text.slice(last, start));
+        parts.push(
+            <mark
+                key={i}
+                data-current-match={i === currentOccurrence ? 'true' : undefined}
+                className={i === currentOccurrence ? 'rounded-sm bg-orange-300 text-gray-900' : 'rounded-sm bg-yellow-200 text-gray-900'}
+            >
+                {text.slice(start, end)}
+            </mark>
+        );
+        last = end;
     });
-
-    return cleanedText.replace(/\s+/g, ' ').trim();
+    if (last < text.length) parts.push(text.slice(last));
+    return parts;
 }
 
 // Memoized transcript segment component
@@ -81,6 +107,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speakerId,
     speakerLabel,
     onSpeakerClick,
+    isActive,
+    onSeek,
+    searchQuery,
+    currentOccurrence,
 }: {
     id: string;
     timestamp: number;
@@ -92,8 +122,15 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speakerId?: string | null;
     speakerLabel?: string;
     onSpeakerClick?: (speakerId: string) => void;
+    isActive?: boolean;
+    onSeek?: (seconds: number) => void;
+    searchQuery?: string;
+    /** Occurrence of the search query in this segment that is the current match, or -1 */
+    currentOccurrence?: number;
 }) {
-    const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    const displayText = transcriptDisplayText(text);
+    const body = searchQuery ? highlightText(displayText, searchQuery, currentOccurrence ?? -1) : displayText;
+    const time = formatRecordingTime(timestamp);
 
     return (
         <div id={`segment-${id}`} className={speakerId ? "mb-3 mt-4 first:mt-0" : "mb-3"}>
@@ -117,24 +154,45 @@ const TranscriptSegment = memo(function TranscriptSegment({
             )}
             <div className="flex items-start gap-2">
                 <Tooltip>
-                    <TooltipTrigger>
-                        <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
-                            {formatRecordingTime(timestamp)}
-                        </span>
+                    <TooltipTrigger asChild>
+                        {onSeek ? (
+                            <button
+                                type="button"
+                                onClick={() => onSeek(timestamp)}
+                                aria-label={`Jump to ${time}`}
+                                className={`text-xs mt-1 flex-shrink-0 min-w-[50px] text-left rounded hover:text-blue-600 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 ${isActive ? 'text-blue-600 font-medium' : 'text-gray-400'}`}
+                            >
+                                {time}
+                            </button>
+                        ) : (
+                            <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
+                                {time}
+                            </span>
+                        )}
                     </TooltipTrigger>
                     <TooltipContent>
+                        {onSeek && <p className="text-xs">Jump to this point</p>}
                         {confidence !== undefined && showConfidence && (
                             <ConfidenceIndicator confidence={confidence} showIndicator={showConfidence} />
                         )}
                     </TooltipContent>
                 </Tooltip>
-                <div className="flex-1">
+                <div
+                    className={`flex-1 rounded-md transition-colors ${isActive ? 'bg-blue-50 -mx-1 px-1' : onSeek ? 'hover:bg-gray-50' : ''} ${onSeek ? 'cursor-pointer' : ''}`}
+                    onClick={onSeek ? () => {
+                        // Selecting text should not move the playhead.
+                        const selection = window.getSelection();
+                        if (selection && !selection.isCollapsed) return;
+                        onSeek(timestamp);
+                    } : undefined}
+                    title={onSeek ? 'Jump to this point in the recording' : undefined}
+                >
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
-                            <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                            <p className="text-base text-gray-800 leading-relaxed">{body}</p>
                         </div>
                     ) : (
-                        <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        <p className="text-base text-gray-800 leading-relaxed">{body}</p>
                     )}
                 </div>
             </div>
@@ -158,7 +216,18 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onLoadMore,
     speakerNames,
     onSpeakerClick,
+    activeSegmentId,
+    followActiveSegment = false,
+    onSeek,
+    searchQuery,
+    currentMatch,
 }) => {
+    const segmentExtras = (segmentId: string) => ({
+        isActive: !!activeSegmentId && segmentId === activeSegmentId,
+        onSeek,
+        searchQuery: searchQuery?.trim() ? searchQuery : undefined,
+        currentOccurrence: currentMatch?.segmentId === segmentId ? currentMatch.occurrence : -1,
+    });
     // Speaker chip only at the start of each speaker turn
     const speakerTurnProps = (index: number) => {
         const speaker = segments[index]?.speaker;
@@ -203,6 +272,55 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         virtualizationThreshold: VIRTUALIZATION_THRESHOLD,
         disableAutoScroll,
     });
+
+    // Scrolls a segment into view (virtualized or plain list).
+    const scrollToSegment = useCallback((segmentId: string, align: 'center' | 'auto') => {
+        const index = segments.findIndex(seg => seg.id === segmentId);
+        if (index === -1) return;
+        if (segments.length >= VIRTUALIZATION_THRESHOLD) {
+            virtualizer.scrollToIndex(index, { align });
+        } else {
+            document.getElementById(`segment-${segmentId}`)?.scrollIntoView({ block: align === 'center' ? 'center' : 'nearest' });
+        }
+    }, [segments, virtualizer]);
+
+    // Pause auto-follow while the user scrolls the transcript themselves.
+    const lastUserScrollRef = useRef(0);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const markUserScroll = () => { lastUserScrollRef.current = Date.now(); };
+        el.addEventListener('wheel', markUserScroll, { passive: true });
+        el.addEventListener('touchmove', markUserScroll, { passive: true });
+        el.addEventListener('keydown', markUserScroll);
+        return () => {
+            el.removeEventListener('wheel', markUserScroll);
+            el.removeEventListener('touchmove', markUserScroll);
+            el.removeEventListener('keydown', markUserScroll);
+        };
+    }, []);
+
+    // Follow playback: keep the playing segment centred.
+    useEffect(() => {
+        if (!followActiveSegment || !activeSegmentId) return;
+        if (Date.now() - lastUserScrollRef.current < FOLLOW_PAUSE_MS) return;
+        scrollToSegment(activeSegmentId, 'center');
+    }, [followActiveSegment, activeSegmentId, scrollToSegment]);
+
+    // Jump to the current search match.
+    const matchSegmentId = currentMatch?.segmentId;
+    const matchOccurrence = currentMatch?.occurrence;
+    useEffect(() => {
+        if (!matchSegmentId) return;
+        lastUserScrollRef.current = Date.now(); // searching takes over from playback follow
+        scrollToSegment(matchSegmentId, 'center');
+        // After the row renders, centre the exact match (long segments can exceed the viewport).
+        const frame = requestAnimationFrame(() => {
+            const mark = scrollRef.current?.querySelector('mark[data-current-match="true"]');
+            mark?.scrollIntoView({ block: 'nearest' });
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [matchSegmentId, matchOccurrence, scrollToSegment]);
 
     // Streaming text effect hook (typewriter animation for new transcripts)
     const { streamingSegmentId, getDisplayText } = useTranscriptStreaming(
@@ -344,6 +462,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                         {...speakerTurnProps(virtualRow.index)}
+                                        {...segmentExtras(segment.id)}
                                     />
                                 </div>
                             );
@@ -401,6 +520,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
                                         {...speakerTurnProps(index)}
+                                        {...segmentExtras(segment.id)}
                                     />
                                 </motion.div>
                             );

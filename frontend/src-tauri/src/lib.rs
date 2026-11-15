@@ -956,6 +956,7 @@ pub fn run() {
             // Retranscription commands
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
+            audio::playback::api_get_meeting_audio,
             audio::retranscription::is_retranscription_in_progress_command,
             // Import audio commands
             audio::import::select_and_validate_audio_command,
