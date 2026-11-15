@@ -23,6 +23,8 @@ interface UsePaginatedTranscriptsReturn {
 
     // Actions
     loadMore: () => Promise<void>;
+    /** Loads every remaining page (used by search and playback follow) */
+    loadAll: () => Promise<void>;
     reset: () => void;
     refetch: () => Promise<void>;
 }
@@ -58,6 +60,8 @@ export function usePaginatedTranscripts({
     const requestIdRef = useRef(0);
     const isLoadingRef = useRef(false);
     const lastLoadTimeRef = useRef(0); // Debounce protection
+    const hasMoreRef = useRef(false);
+    const loadAllPromiseRef = useRef<Promise<void> | null>(null);
 
     const isCurrentRequest = useCallback((requestId: number) =>
         requestIdRef.current === requestId && activeMeetingIdRef.current === meetingId,
@@ -75,6 +79,8 @@ export function usePaginatedTranscripts({
         setIsLoading(true);
         setIsLoadingMore(false);
         setHasMore(false);
+        hasMoreRef.current = false;
+        loadAllPromiseRef.current = null;
         setError(null);
         offsetRef.current = 0;
     }, []);
@@ -135,6 +141,7 @@ export function usePaginatedTranscripts({
             }
 
             setHasMore(response.has_more);
+            hasMoreRef.current = response.has_more;
             setTotalCount(response.total_count);
             offsetRef.current = offset + newTranscripts.length;
 
@@ -171,6 +178,38 @@ export function usePaginatedTranscripts({
             }
         }
     }, [hasMore, meetingId, loadTranscriptsAtOffset, isLoading, isCurrentRequest]);
+
+    // Load every remaining page; concurrent callers share one run.
+    const loadAll = useCallback(async () => {
+        if (loadAllPromiseRef.current) return loadAllPromiseRef.current;
+        const requestId = requestIdRef.current;
+        const run = (async () => {
+            // Let an in-flight page finish first so offsets stay consistent.
+            while (isLoadingRef.current && isCurrentRequest(requestId)) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            if (!isCurrentRequest(requestId) || !hasMoreRef.current) return;
+            isLoadingRef.current = true;
+            setIsLoadingMore(true);
+            try {
+                while (hasMoreRef.current && isCurrentRequest(requestId)) {
+                    const page = await loadTranscriptsAtOffset(requestId, offsetRef.current, true);
+                    if (page.length === 0) break;
+                }
+            } finally {
+                if (isCurrentRequest(requestId)) {
+                    setIsLoadingMore(false);
+                    isLoadingRef.current = false;
+                }
+            }
+        })();
+        loadAllPromiseRef.current = run;
+        try {
+            await run;
+        } finally {
+            if (loadAllPromiseRef.current === run) loadAllPromiseRef.current = null;
+        }
+    }, [loadTranscriptsAtOffset, isCurrentRequest]);
 
     // Force refetch of data (e.g., after retranscription)
     const refetch = useCallback(async () => {
@@ -218,6 +257,7 @@ export function usePaginatedTranscripts({
         loadedCount: transcripts.length,
         error,
         loadMore,
+        loadAll,
         reset,
         refetch,
     };

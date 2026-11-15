@@ -26,7 +26,7 @@ Before running desktop dev/build commands, complete the [first-run sidecar setup
 
 Use the Tauri app for development and validation; a standalone Next.js server does not exercise native commands, audio, or permissions.
 
-For release builds (`.app`/`.dmg`/installers), follow the [production build skill](.claude/skills/production-build/SKILL.md); it covers known macOS release-build failures. See [build and platform setup](docs/BUILDING.md), [development commands and debugging](docs/BUILDING.md#development-commands-and-debugging), and [GPU acceleration](docs/GPU_ACCELERATION.md) for prerequisites and platform-specific options. After sidecar preparation, prefer the package scripts over clean-run wrappers, which can remove dependencies and generated output.
+For release builds (`.app`/`.dmg`/installers), follow the [production build skill](.claude/skills/production-build/SKILL.md); it covers macOS, Windows and Linux, including known release-build failures. See [build and platform setup](docs/BUILDING.md), [development commands and debugging](docs/BUILDING.md#development-commands-and-debugging), and [GPU acceleration](docs/GPU_ACCELERATION.md) for prerequisites and platform-specific options. After sidecar preparation, prefer the package scripts over clean-run wrappers, which can remove dependencies and generated output.
 
 ## Working in This Repository
 

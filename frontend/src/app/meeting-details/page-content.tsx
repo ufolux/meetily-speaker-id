@@ -34,6 +34,7 @@ export default function PageContent({
   totalCount,
   loadedCount,
   onLoadMore,
+  onLoadAll,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -49,6 +50,7 @@ export default function PageContent({
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+  onLoadAll?: () => Promise<void>;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -215,6 +217,7 @@ export default function PageContent({
               totalCount={totalCount}
               loadedCount={loadedCount}
               onLoadMore={onLoadMore}
+              onLoadAll={onLoadAll}
               meetingId={meeting.id}
               meetingFolderPath={meeting.folder_path}
               onRefetchTranscripts={onRefetchTranscripts}
