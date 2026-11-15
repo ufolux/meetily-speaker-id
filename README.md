@@ -32,7 +32,7 @@ Without the voice model, recordings that capture system audio are still split in
 
 - The voice-matching thresholds were calibrated on one real two-person meeting. Meetings with more people, or with very similar voices, may occasionally split one person in two (fix it with **merge**) or combine two voices.
 - When two people talk at the same time, that speech gets a single label.
-- Imports and re-transcriptions work from the mixed recording, so they label speakers by voice only and never use **Me**.
+- Imports work from a single mixed file, so they label speakers by voice only and never use **Me**. Re-transcription (**Enhance**) also works from the mixed recording, but it keeps **Me** by matching voices to the lines the live transcript labelled **Me**. If those labels are already gone, for example after an Enhance made before this fix, **Me** can't be restored.
 - Speaker names reset when a meeting is re-transcribed, because the speaker numbering is recalculated.
 - Live speaker labelling has not yet been validated with real devices across platforms.
 
