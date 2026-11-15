@@ -14,6 +14,7 @@ pub mod clustering;
 pub mod commands;
 pub mod embedding;
 pub mod fbank;
+pub mod relabel;
 pub mod segmentation;
 
 use anyhow::{anyhow, Context, Result};

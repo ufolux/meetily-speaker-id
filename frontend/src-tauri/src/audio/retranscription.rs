@@ -430,19 +430,54 @@ async fn run_retranscription<R: Runtime>(
     // Create transcript segments with proper timestamps from VAD
     let mut segments = create_transcript_segments(&all_transcripts);
 
-    for (segment, speaker) in segments.iter_mut().zip(kept_speakers) {
+    let app_state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| anyhow!("App state not available"))?;
+    let pool = app_state.db_manager.pool();
+
+    // The mixed recording can't tell the user's voice apart, so reuse the
+    // previous transcript's "Me" ranges to keep that label.
+    let previous_me: Vec<(f64, f64)> = sqlx::query_as::<_, (Option<f64>, Option<f64>)>(
+        "SELECT audio_start_time, audio_end_time FROM transcripts WHERE meeting_id = ? AND speaker = 'me'",
+    )
+    .bind(&meeting_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_else(|e| {
+        warn!("Could not read previous speaker labels: {}", e);
+        Vec::new()
+    })
+    .into_iter()
+    .filter_map(|(start, end)| Some((start?, end?)))
+    .collect();
+
+    let timed: Vec<(f64, f64, Option<String>)> = segments
+        .iter()
+        .zip(kept_speakers)
+        .map(|(segment, speaker)| {
+            (
+                segment.audio_start_time.unwrap_or(0.0),
+                segment.audio_end_time.unwrap_or(0.0),
+                speaker,
+            )
+        })
+        .collect();
+    let labels = crate::speaker::relabel::carry_over_me(&timed, &previous_me);
+    let kept_me = labels.iter().any(|l| l.as_deref() == Some("me"));
+    for (segment, speaker) in segments.iter_mut().zip(labels) {
         segment.speaker = speaker;
+    }
+    if !previous_me.is_empty() {
+        info!(
+            "Carried over \"me\" label from {} previous ranges: {}",
+            previous_me.len(),
+            if kept_me { "matched" } else { "no matching voice" }
+        );
     }
 
     emit_progress(&app, &meeting_id, "saving", 80, "Saving transcripts...");
 
-    // Save to database
-    let app_state = app
-        .try_state::<AppState>()
-        .ok_or_else(|| anyhow!("App state not available"))?;
-
     // Wrap delete+insert+update in a transaction to prevent data loss
-    let pool = app_state.db_manager.pool();
     let mut conn = pool.acquire().await.map_err(|e| anyhow!("DB error: {}", e))?;
     let mut tx = sqlx::Connection::begin(&mut *conn)
         .await
@@ -454,8 +489,13 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
-    // Speaker ids are regenerated, so earlier custom names no longer apply.
-    sqlx::query("DELETE FROM meeting_speakers WHERE meeting_id = ?")
+    // Speaker ids are regenerated, so earlier custom names no longer apply,
+    // except for "me", which is carried over when its voice is matched.
+    sqlx::query(if kept_me {
+        "DELETE FROM meeting_speakers WHERE meeting_id = ? AND speaker_id != 'me'"
+    } else {
+        "DELETE FROM meeting_speakers WHERE meeting_id = ?"
+    })
         .bind(&meeting_id)
         .execute(&mut *tx)
         .await
