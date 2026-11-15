@@ -15,15 +15,20 @@ use super::embedding::cosine;
 pub const SPEAKER_ME: &str = "me";
 pub const SPEAKER_OTHERS: &str = "others";
 
-// Thresholds for the 3D-Speaker CAM++ model. Calibrated on synthetic speech
-// (same voice >= 0.87, distinct voices <= 0.63); erring high because splitting
-// one person into two speakers can be fixed by merging, but a merge cannot.
+// Live thresholds for the 3D-Speaker CAM++ model, calibrated on a real
+// 20-minute, two-person meeting split by the live VAD (500 ms redemption).
+// Real speech scores far lower than synthetic voices: consecutive segments of
+// one speaker have median cosine ~0.7 but a 10th percentile of ~0.25, while
+// different speakers sit around 0.15-0.2. At 0.62 that meeting hit the
+// 12-speaker cap; with a 2 s minimum for new speakers, every setting from
+// 0.30 to 0.45 kept two speakers covering >= 99% of segments. 0.40 leaves the
+// most headroom for telling more people apart.
 /// Same-speaker cosine threshold for joining an existing cluster.
-const MATCH_THRESHOLD: f32 = 0.62;
+const MATCH_THRESHOLD: f32 = 0.40;
 /// Below `MATCH_THRESHOLD` a short chunk may still join its nearest cluster above this.
-const WEAK_MATCH_THRESHOLD: f32 = 0.4;
+const WEAK_MATCH_THRESHOLD: f32 = 0.25;
 /// A new speaker is only created from at least this much speech.
-const MIN_NEW_SPEAKER_SECONDS: f32 = 1.5;
+const MIN_NEW_SPEAKER_SECONDS: f32 = 2.0;
 /// Cap on distinct speakers per meeting; beyond this chunks join the nearest one.
 const MAX_SPEAKERS: usize = 12;
 
@@ -57,6 +62,8 @@ impl Cluster {
 pub struct OnlineSpeakerClusterer {
     /// True when system audio is captured, so the mic/system split is meaningful.
     source_aware: bool,
+    match_threshold: f32,
+    weak_match_threshold: f32,
     clusters: Vec<Cluster>,
     next_number: usize,
     last_mic: Option<String>,
@@ -65,8 +72,15 @@ pub struct OnlineSpeakerClusterer {
 
 impl OnlineSpeakerClusterer {
     pub fn new(source_aware: bool) -> Self {
+        Self::with_thresholds(source_aware, MATCH_THRESHOLD, WEAK_MATCH_THRESHOLD)
+    }
+
+    /// Clusterer with explicit similarity thresholds (used for calibration).
+    pub fn with_thresholds(source_aware: bool, match_threshold: f32, weak_match_threshold: f32) -> Self {
         Self {
             source_aware,
+            match_threshold,
+            weak_match_threshold,
             clusters: Vec::new(),
             next_number: 1,
             last_mic: None,
@@ -137,7 +151,7 @@ impl OnlineSpeakerClusterer {
 
         let can_create = duration_secs >= MIN_NEW_SPEAKER_SECONDS && self.clusters.len() < MAX_SPEAKERS;
         let index = match best {
-            Some((i, sim)) if sim >= MATCH_THRESHOLD => {
+            Some((i, sim)) if sim >= self.match_threshold => {
                 self.clusters[i].add(embedding, duration_secs.min(10.0));
                 Some(i)
             }
@@ -153,7 +167,7 @@ impl OnlineSpeakerClusterer {
                 self.clusters.push(cluster);
                 Some(self.clusters.len() - 1)
             }
-            Some((i, sim)) if sim >= WEAK_MATCH_THRESHOLD || self.clusters.len() >= MAX_SPEAKERS => Some(i),
+            Some((i, sim)) if sim >= self.weak_match_threshold || self.clusters.len() >= MAX_SPEAKERS => Some(i),
             _ => None,
         };
 
@@ -212,65 +226,67 @@ pub fn cluster_offline_with_threshold(embeddings: &[Option<Vec<f32>>], threshold
     labels
 }
 
-struct Centroid {
+/// A cluster as the running sum of its (unit-length) voiceprints.
+/// Similarities are average-linkage: the mean cosine between members, which
+/// does not inflate as noisy members are added (unlike a normalised centroid).
+struct BatchCluster {
     sum: Vec<f32>,
-    unit: Vec<f32>,
     count: usize,
 }
 
-impl Centroid {
+impl BatchCluster {
     fn new(dim: usize) -> Self {
-        Self { sum: vec![0.0; dim], unit: vec![0.0; dim], count: 0 }
+        Self { sum: vec![0.0; dim], count: 0 }
     }
     fn add(&mut self, v: &[f32]) {
         self.sum.iter_mut().zip(v).for_each(|(s, x)| *s += x);
         self.count += 1;
     }
-    fn finish(&mut self) {
-        self.unit = self.sum.clone();
-        super::embedding::l2_normalize(&mut self.unit);
+    /// Mean cosine between `v` and the members.
+    fn similarity_to(&self, v: &[f32]) -> f32 {
+        cosine(&self.sum, v) / self.count.max(1) as f32
+    }
+    /// Mean cosine between members of `self` and members of `other`.
+    fn linkage(&self, other: &BatchCluster) -> f32 {
+        cosine(&self.sum, &other.sum) / (self.count.max(1) * other.count.max(1)) as f32
     }
 }
 
-fn nearest(centroids: &[Centroid], v: &[f32]) -> Option<(usize, f32)> {
-    centroids
+fn nearest(clusters: &[BatchCluster], v: &[f32]) -> Option<(usize, f32)> {
+    clusters
         .iter()
         .enumerate()
-        .map(|(i, c)| (i, cosine(&c.unit, v)))
+        .map(|(i, c)| (i, c.similarity_to(v)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// Scalable clustering: leader pass, centroid merging, then k-means refinement.
-/// O(n·k) instead of O(n³), so an hour of short windows stays fast.
-/// Returns a cluster index per vector.
+/// Scalable average-linkage clustering: leader pass, cluster merging, then
+/// k-means-style refinement. O(n·k) instead of O(n³), so an hour of windows
+/// stays fast. Returns a cluster index per vector.
 fn cluster_embeddings(vectors: &[&[f32]], threshold: f32) -> Vec<usize> {
     let dim = vectors[0].len();
 
-    // 1. Leader clustering against running centroids. Capped so noisy windows in
-    // a long recording cannot blow up the (cubic in k) merge step below.
+    // 1. Leader pass. Capped so noisy windows in a long recording cannot blow
+    // up the (cubic in k) merge step below.
     const MAX_LEADER_CLUSTERS: usize = 64;
-    let mut centroids: Vec<Centroid> = Vec::new();
+    let mut clusters: Vec<BatchCluster> = Vec::new();
     for v in vectors {
-        match nearest(&centroids, v) {
-            Some((i, sim)) if sim >= threshold || centroids.len() >= MAX_LEADER_CLUSTERS => {
-                centroids[i].add(v);
-                centroids[i].finish();
-            }
+        match nearest(&clusters, v) {
+            Some((i, sim)) if sim >= threshold || clusters.len() >= MAX_LEADER_CLUSTERS => clusters[i].add(v),
             _ => {
-                let mut c = Centroid::new(dim);
+                let mut c = BatchCluster::new(dim);
                 c.add(v);
-                c.finish();
-                centroids.push(c);
+                clusters.push(c);
             }
         }
     }
 
-    // 2. Merge centroids that describe the same voice (k is small here).
+    // 2. Merge clusters whose members are, on average, the same voice.
     loop {
         let mut best: Option<(usize, usize, f32)> = None;
-        for a in 0..centroids.len() {
-            for b in (a + 1)..centroids.len() {
-                let sim = cosine(&centroids[a].unit, &centroids[b].unit);
+        for a in 0..clusters.len() {
+            for b in (a + 1)..clusters.len() {
+                let sim = clusters[a].linkage(&clusters[b]);
                 if best.map_or(true, |(_, _, s)| sim > s) {
                     best = Some((a, b, sim));
                 }
@@ -278,51 +294,64 @@ fn cluster_embeddings(vectors: &[&[f32]], threshold: f32) -> Vec<usize> {
         }
         match best {
             Some((a, b, sim)) if sim >= threshold => {
-                let merged = centroids.swap_remove(b);
-                centroids[a].sum.iter_mut().zip(&merged.sum).for_each(|(s, x)| *s += x);
-                centroids[a].count += merged.count;
-                centroids[a].finish();
+                let merged = clusters.swap_remove(b);
+                clusters[a].sum.iter_mut().zip(&merged.sum).for_each(|(s, x)| *s += x);
+                clusters[a].count += merged.count;
             }
             _ => break,
         }
     }
 
-    // 3. Refine: reassign every vector to its nearest centroid, recompute, repeat.
+    // 3. Refine: reassign every vector to its most similar cluster, recompute,
+    // and drop clusters too small to be a real speaker (noise, laughter,
+    // crosstalk: under ~1% of the windows) or beyond the speaker cap.
+    let min_count = vectors.len() / 100;
     let mut assignment = vec![0usize; vectors.len()];
     for _ in 0..5 {
         for (i, v) in vectors.iter().enumerate() {
-            assignment[i] = nearest(&centroids, v).map(|(c, _)| c).unwrap_or(0);
+            assignment[i] = nearest(&clusters, v).map(|(c, _)| c).unwrap_or(0);
         }
-        let mut next: Vec<Centroid> = (0..centroids.len()).map(|_| Centroid::new(dim)).collect();
+        let mut next: Vec<BatchCluster> = (0..clusters.len()).map(|_| BatchCluster::new(dim)).collect();
         for (i, v) in vectors.iter().enumerate() {
             next[assignment[i]].add(v);
         }
-        // Drop empty clusters, and fold single-vector clusters into a neighbour when
-        // one is reasonably close (isolated outliers are usually noise, not a speaker).
-        let mut keep: Vec<Centroid> = next.into_iter().filter(|c| c.count > 0).collect();
-        keep.iter_mut().for_each(Centroid::finish);
-        if keep.len() > 1 {
-            let singletons: Vec<usize> = (0..keep.len()).filter(|&i| keep[i].count == 1).collect();
-            let mut removed = vec![false; keep.len()];
-            for i in singletons {
-                let best_other = (0..keep.len())
-                    .filter(|&j| j != i && !removed[j])
-                    .map(|j| (j, cosine(&keep[i].unit, &keep[j].unit)))
-                    .max_by(|a, b| a.1.total_cmp(&b.1));
-                if matches!(best_other, Some((_, sim)) if sim >= WEAK_MATCH_THRESHOLD) {
-                    removed[i] = true;
-                }
+        let mut keep: Vec<BatchCluster> = next.into_iter().filter(|c| c.count > 0).collect();
+        while keep.len() > 1 {
+            let smallest = (0..keep.len()).min_by_key(|&i| keep[i].count).unwrap_or(0);
+            if keep[smallest].count < min_count || keep.len() > MAX_SPEAKERS {
+                keep.swap_remove(smallest);
+            } else {
+                break;
             }
-            keep = keep
-                .into_iter()
-                .zip(removed)
-                .filter_map(|(c, r)| (!r).then_some(c))
-                .collect();
         }
-        centroids = keep;
+        clusters = keep;
     }
+
+    // 4. Fold fragments: on noisy real speech one voice can leave a small
+    // side cluster just below the threshold. A cluster holding under 10% of
+    // the windows joins its closest cluster if they are still clearly alike
+    // (linkage >= 60% of the threshold); a quiet but distinct participant stays.
+    loop {
+        let fragment_limit = vectors.len() / 10;
+        let candidate = (0..clusters.len())
+            .filter(|&i| clusters[i].count < fragment_limit)
+            .filter_map(|i| {
+                (0..clusters.len())
+                    .filter(|&j| j != i)
+                    .map(|j| (i, j, clusters[i].linkage(&clusters[j])))
+                    .max_by(|a, b| a.2.total_cmp(&b.2))
+            })
+            .filter(|&(_, _, sim)| sim >= threshold * 0.6)
+            .max_by(|a, b| a.2.total_cmp(&b.2));
+        let Some((small, target, _)) = candidate else { break };
+        let moved = clusters.swap_remove(small);
+        let target = if target == clusters.len() { small } else { target };
+        clusters[target].sum.iter_mut().zip(&moved.sum).for_each(|(s, x)| *s += x);
+        clusters[target].count += moved.count;
+    }
+
     for (i, v) in vectors.iter().enumerate() {
-        assignment[i] = nearest(&centroids, v).map(|(c, _)| c).unwrap_or(0);
+        assignment[i] = nearest(&clusters, v).map(|(c, _)| c).unwrap_or(0);
     }
     assignment
 }
