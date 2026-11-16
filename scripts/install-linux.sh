@@ -1,9 +1,9 @@
 #!/bin/sh
 # Meetily Linux installer.
-#   curl -fsSL https://raw.githubusercontent.com/Zackriya-Solutions/meetily/main/scripts/install-linux.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ufolux/meetily-speaker-id/main/scripts/install-linux.sh | sh
 set -eu
 
-REPO="Zackriya-Solutions/meetily"
+REPO="ufolux/meetily-speaker-id"
 SCRIPT_URL="https://raw.githubusercontent.com/$REPO/main/scripts/install-linux.sh"
 APP_DIR="$HOME/.local/share/meetily"
 APPIMAGE="$APP_DIR/meetily.AppImage"
