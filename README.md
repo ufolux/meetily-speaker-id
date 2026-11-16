@@ -57,7 +57,7 @@ Meetings without a saved recording show no player. Recordings in a format the bu
 These features come from Meetily itself:
 
 - Real-time local transcription with **Whisper** or **Parakeet**.
-- AI summaries with **Ollama** (local), Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint.
+- AI summaries with **Ollama** (local), Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint. Cloud providers are opt-in: nothing is sent to them unless you select one and enter a key. This build has no analytics or update checks.
 - Microphone and system-audio capture with mixing.
 - Import existing audio files, and re-transcribe meetings with a different model or language.
 - GPU acceleration: Metal/CoreML on macOS, Vulkan on Windows, configurable source builds on Linux.

@@ -1,9 +1,7 @@
-use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
+use log::{error as log_error, info as log_info, warn as log_warn};
 use crate::utils::url_origin_for_log;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tauri::{AppHandle, Runtime};
-use tauri_plugin_store::StoreExt;
 
 use crate::{
     database::{
@@ -16,9 +14,6 @@ use crate::{
     state::AppState,
     summary::CustomOpenAIConfig,
 };
-
-// Hardcoded server URL
-const APP_SERVER_URL: &str = "http://localhost:5167";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
@@ -45,26 +40,6 @@ pub struct TranscriptSearchResult {
     #[serde(rename = "matchContext")]
     pub match_context: String,
     pub timestamp: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProfileRequest {
-    pub email: String,
-    pub license_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SaveProfileRequest {
-    pub id: String,
-    pub email: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateProfileRequest {
-    pub email: String,
-    pub license_key: String,
-    pub company: String,
-    pub position: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -195,53 +170,6 @@ pub struct TranscriptSegment {
     pub speaker: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Profile {
-    pub id: String,
-    pub name: Option<String>,
-    pub email: String,
-    pub license_key: String,
-    pub company: Option<String>,
-    pub position: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub is_licensed: bool,
-}
-
-// Helper function to get auth token from store (optional)
-#[allow(dead_code)]
-async fn get_auth_token<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
-    let store = match app.store("store.json") {
-        Ok(store) => store,
-        Err(_) => return None,
-    };
-
-    match store.get("authToken") {
-        Some(token) if token.as_str().is_some() => {
-            log_info!("Auth token loaded from store");
-            token.as_str().map(str::to_owned)
-        }
-        Some(_) => {
-            log_warn!("Auth token in store is not a string");
-            None
-        }
-        None => {
-            log_warn!("No auth token found in store");
-            None
-        }
-    }
-}
-
-// Helper function to get server address - now hardcoded
-async fn get_server_address<R: Runtime>(_app: &AppHandle<R>) -> Result<String, String> {
-    log_info!(
-        "Using configured API origin={}",
-        url_origin_for_log(APP_SERVER_URL)
-    );
-    Ok(APP_SERVER_URL.to_string())
-}
-
-// Generic API call function with optional authentication
 fn reqwest_error_class(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
         "timeout"
@@ -255,108 +183,6 @@ fn reqwest_error_class(error: &reqwest::Error) -> &'static str {
         "request"
     }
 }
-async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
-    app: &AppHandle<R>,
-    endpoint: &str,
-    method: &str,
-    body: Option<&str>,
-    additional_headers: Option<HashMap<String, String>>,
-    auth_token: Option<String>,
-) -> Result<T, String> {
-    let client = reqwest::Client::new();
-    let server_url = get_server_address(app).await?;
-    let url = format!("{}{}", server_url, endpoint);
-    let origin = url_origin_for_log(&url);
-    log_info!(
-        "API request started; method={}, route={}, origin={}",
-        method,
-        endpoint.split('?').next().unwrap_or(endpoint),
-        origin
-    );
-
-    let mut request = match method.to_uppercase().as_str() {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        _ => return Err(format!("Unsupported HTTP method: {}", method)),
-    };
-
-    if let Some(token) = auth_token {
-        request = request.header("Authorization", format!("Bearer {}", token));
-    } else {
-        log_warn!("API request has no authorization token");
-    }
-
-    request = request.header("Content-Type", "application/json");
-    if let Some(headers) = additional_headers {
-        for (key, value) in headers {
-            request = request.header(&key, &value);
-        }
-    }
-    if let Some(body_str) = body {
-        request = request.body(body_str.to_string());
-    }
-
-    let response = request.send().await.map_err(|error| {
-        log_error!(
-            "API request failed; method={}, route={}, origin={}, error_class={}",
-            method,
-            endpoint.split('?').next().unwrap_or(endpoint),
-            origin,
-            reqwest_error_class(&error)
-        );
-        format!("Request failed: {}", error)
-    })?;
-    let status = response.status();
-
-    if !status.is_success() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        log_error!(
-            "API response failed; method={}, route={}, origin={}, status={}, response_bytes={}",
-            method,
-            endpoint.split('?').next().unwrap_or(endpoint),
-            origin,
-            status,
-            error_text.len()
-        );
-        return Err(format!("HTTP {}: {}", status, error_text));
-    }
-
-    let response_text = response.text().await.map_err(|error| {
-        log_error!(
-            "API response read failed; method={}, route={}, origin={}, error_class={}",
-            method,
-            endpoint.split('?').next().unwrap_or(endpoint),
-            origin,
-            reqwest_error_class(&error)
-        );
-        format!("Failed to read response: {}", error)
-    })?;
-    log_info!(
-        "API response received; method={}, route={}, origin={}, status={}, response_bytes={}",
-        method,
-        endpoint.split('?').next().unwrap_or(endpoint),
-        origin,
-        status,
-        response_text.len()
-    );
-
-    serde_json::from_str(&response_text).map_err(|error| {
-        log_error!(
-            "API response parse failed; method={}, route={}, origin={}, status={}, error_class=json",
-            method,
-            endpoint.split('?').next().unwrap_or(endpoint),
-            origin,
-            status
-        );
-        format!("Failed to parse JSON: {}", error)
-    })
-}
-
 // API Commands for Tauri
 
 #[tauri::command]
@@ -421,75 +247,6 @@ pub async fn api_search_transcripts<R: Runtime>(
             Err(format!("Failed to search transcripts: {}", e))
         }
     }
-}
-
-#[tauri::command]
-pub async fn api_get_profile<R: Runtime>(
-    app: AppHandle<R>,
-    email: String,
-    license_key: String,
-    auth_token: Option<String>,
-) -> Result<Profile, String> {
-    log_info!("Profile lookup requested; auth_present={}", auth_token.is_some());
-
-    let profile_request = ProfileRequest { email, license_key };
-    let body = serde_json::to_string(&profile_request).map_err(|e| e.to_string())?;
-
-    make_api_request::<R, Profile>(&app, "/get-profile", "POST", Some(&body), None, auth_token)
-        .await
-}
-
-#[tauri::command]
-pub async fn api_save_profile<R: Runtime>(
-    app: AppHandle<R>,
-    id: String,
-    email: String,
-    auth_token: Option<String>,
-) -> Result<serde_json::Value, String> {
-    log_info!("Profile save requested; auth_present={}", auth_token.is_some());
-
-    let save_request = SaveProfileRequest { id, email };
-    let body = serde_json::to_string(&save_request).map_err(|e| e.to_string())?;
-
-    make_api_request::<R, serde_json::Value>(
-        &app,
-        "/save-profile",
-        "POST",
-        Some(&body),
-        None,
-        auth_token,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn api_update_profile<R: Runtime>(
-    app: AppHandle<R>,
-    email: String,
-    license_key: String,
-    company: String,
-    position: String,
-    auth_token: Option<String>,
-) -> Result<serde_json::Value, String> {
-    log_info!("Profile update requested; auth_present={}", auth_token.is_some());
-
-    let update_request = UpdateProfileRequest {
-        email,
-        license_key,
-        company,
-        position,
-    };
-    let body = serde_json::to_string(&update_request).map_err(|e| e.to_string())?;
-
-    make_api_request::<R, serde_json::Value>(
-        &app,
-        "/update-profile",
-        "POST",
-        Some(&body),
-        None,
-        auth_token,
-    )
-    .await
 }
 
 #[tauri::command]
@@ -1080,82 +837,6 @@ pub async fn open_meeting_folder<R: Runtime>(
         None => {
             log_warn!("Meeting not found: {}", meeting_id);
             Err("Meeting not found".to_string())
-        }
-    }
-}
-
-// Simple test command to check backend connectivity
-#[tauri::command]
-pub async fn test_backend_connection<R: Runtime>(
-    app: AppHandle<R>,
-    auth_token: Option<String>,
-) -> Result<String, String> {
-    log_debug!("Testing backend connection...");
-
-    let client = reqwest::Client::new();
-    let server_url = get_server_address(&app).await?;
-
-    log_debug!("Testing connection to origin={}", url_origin_for_log(&server_url));
-
-    let mut request = client.get(&format!("{}/docs", server_url));
-
-    if let Some(token) = auth_token {
-        request = request.header("Authorization", format!("Bearer {}", token));
-    }
-
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            log_debug!("Backend responded with status: {}", status);
-            Ok(format!("Backend is reachable. Status: {}", status))
-        }
-        Err(e) => {
-            log_debug!(
-                "Backend connection failed; error_class={}",
-                reqwest_error_class(&e)
-            );
-            Err(format!("Failed to connect to backend: {}", e))
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    log_debug!("=== DEBUG: Testing backend connection ===");
-
-    // Test 1: Check server address from store
-    let server_url = match get_server_address(&app).await {
-        Ok(url) => {
-            log_debug!("Configured backend origin={}", url_origin_for_log(&url));
-            url
-        }
-        Err(e) => {
-            log_error!("Failed to resolve configured backend origin");
-            return Err(format!("Failed to get server URL: {}", e));
-        }
-    };
-
-    // Test 2: Make a simple HTTP request to the backend
-    let client = reqwest::Client::new();
-    let test_url = format!("{}/docs", server_url); // Try the docs endpoint which should be public
-
-    log_debug!("Testing connection to origin={}", url_origin_for_log(&test_url));
-
-    match client.get(&test_url).send().await {
-        Ok(response) => {
-            let status = response.status();
-            log_debug!("✓ Backend responded with status: {}", status);
-            Ok(format!(
-                "Backend connection successful! Status: {}, URL: {}",
-                status, server_url
-            ))
-        }
-        Err(e) => {
-            log_error!(
-                "Backend connection failed; error_class={}",
-                reqwest_error_class(&e)
-            );
-            Err(format!("Backend connection failed: {}", e))
         }
     }
 }
