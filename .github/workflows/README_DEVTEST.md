@@ -128,7 +128,6 @@ Each platform uses optimal hardware acceleration:
 **Solutions:**
 1. Check that all required secrets are configured:
    - `APPLE_CERTIFICATE`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
-   - `SM_HOST`, `SM_API_KEY`, `SM_CODE_SIGNING_CERT_SHA1_HASH`
    - `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 2. Review workflow logs for specific error messages
 3. Try running without signing first to isolate the issue

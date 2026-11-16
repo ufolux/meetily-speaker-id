@@ -210,7 +210,7 @@ jobs:
           echo ""
           echo "Uploaded assets (via tauri-action):"
           echo "  - macOS: DMG installer + app.tar.gz (for updater) + .sig"
-          echo "  - Windows: MSI + NSIS installers (SIGNED via signCommand) + .sig files"
+          echo "  - Windows: MSI + NSIS installers (unsigned)"
           echo "  - Linux: DEB and AppImage packages + .sig files"
           echo "  - Updater manifest: latest.json (generated after validation)"
           echo ""

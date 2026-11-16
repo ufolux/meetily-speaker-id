@@ -285,12 +285,8 @@ All workflows require these secrets to be configured:
 - `APPLE_TEAM_ID` - Team ID
 - `KEYCHAIN_PASSWORD` - Temporary keychain password
 
-### Windows Signing (DigiCert)
-- `SM_HOST` - DigiCert host URL
-- `SM_API_KEY` - API key
-- `SM_CLIENT_CERT_FILE_B64` - Client cert (base64)
-- `SM_CLIENT_CERT_PASSWORD` - Client cert password
-- `SM_CODE_SIGNING_CERT_SHA1_HASH` - Certificate hash
+### Windows
+Windows builds are unsigned. No code-signing certificate or secrets are needed; Windows SmartScreen will warn on first run.
 
 ### Tauri Updater (All Platforms)
 - `TAURI_SIGNING_PRIVATE_KEY` - Ed25519 private key
