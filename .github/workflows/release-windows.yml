@@ -1,0 +1,148 @@
+name: "Release - Windows"
+
+# Windows-only version of the Release flow (release.yml).
+#
+#   1. create-release  - create (or reuse) the draft GitHub release for the
+#                        version in tauri.conf.json
+#   2. build-windows   - build the Windows MSI + NSIS installers via build.yml
+#                        and upload them straight to that draft release
+#   3. release-summary - check that both installers are on the release
+#
+# Differences from release.yml: only Windows is built, and there is no
+# validate-release job (no updater signatures or latest.json are produced),
+# so it does not depend on the updater config or any signing secrets.
+# The installers are unsigned; Windows SmartScreen warns on first run.
+#
+# The workflow file must be on the default branch before "Run workflow"
+# appears in the Actions tab.
+
+on:
+  workflow_dispatch:
+
+# Prevent duplicate releases
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # STEP 1: Create the draft release (or reuse the one from an earlier attempt)
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.create-release.outputs.result }}
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all tags
+
+      - name: Get version from tauri.conf.json and check for existing tags
+        id: get-version
+        shell: bash
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' frontend/src-tauri/tauri.conf.json | cut -d'"' -f4)
+          echo "Version from tauri.conf.json: $VERSION"
+
+          git fetch --tags
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "ERROR: Tag v${VERSION} already exists; bump the application version before releasing."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reuse draft release
+        id: create-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = `v${{ steps.get-version.outputs.version }}`
+            const { owner, repo } = context.repo
+
+            // A draft has no git tag yet, so an earlier failed or cancelled
+            // attempt leaves one behind. Reuse it instead of piling up drafts.
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 })
+            const existing = releases.find(r => r.draft && r.tag_name === tag)
+
+            if (existing) {
+              console.log(`Reusing draft release ${existing.id} for ${tag}`)
+              // Clear installers from a previous attempt so the upload can't collide.
+              for (const asset of existing.assets) {
+                if (/\.(msi|exe)(\.sig)?$/.test(asset.name)) {
+                  console.log(`Deleting stale asset ${asset.name}`)
+                  await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id })
+                }
+              }
+              return existing.id
+            }
+
+            const { data } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: `Meetily ${tag}`,
+              draft: true,
+              prerelease: false,
+              generate_release_notes: true
+            })
+            console.log(`Created draft release with ID: ${data.id}`)
+            return data.id
+
+  # STEP 2: Build Windows and upload directly to the release
+  build-windows:
+    needs: create-release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ github.sha }}
+      platform: "windows-latest"
+      target: "x86_64-pc-windows-msvc"
+      build-args: ""
+      sign-binaries: false
+      asset-prefix: "meetily"
+      upload-artifacts: false  # tauri-action uploads directly to the release
+      release-id: ${{ needs.create-release.outputs.release-id }}
+    secrets: inherit
+
+  # STEP 3: Confirm both installers made it onto the release
+  release-summary:
+    needs: [create-release, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check and list release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" \
+            --jq '.[] | [.name, (.size / 1048576 | floor)] | @tsv' > assets.tsv
+
+          {
+            echo "## Windows Release v${VERSION}"
+            echo ""
+            echo "| File | Size |"
+            echo "|------|------|"
+            awk -F'\t' '{printf "| %s | %s MB |\n", $1, $2}' assets.tsv
+            echo ""
+            echo "Unsigned build: Windows SmartScreen will warn on first run."
+            echo ""
+            echo "Review and publish the draft: https://github.com/${GITHUB_REPOSITORY}/releases"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          cut -f1 assets.tsv
+          msi=$(cut -f1 assets.tsv | grep -c '\.msi$' || true)
+          nsis=$(cut -f1 assets.tsv | grep -c -- '-setup\.exe$' || true)
+          if [ "$msi" -ne 1 ] || [ "$nsis" -ne 1 ]; then
+            echo "ERROR: expected exactly one .msi and one -setup.exe on the release, found msi=$msi nsis=$nsis"
+            exit 1
+          fi
+          echo "OK: one MSI and one NSIS installer are on the draft release."

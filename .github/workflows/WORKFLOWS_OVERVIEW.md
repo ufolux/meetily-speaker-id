@@ -162,6 +162,31 @@ This document provides a quick overview of all available CI/CD workflows in this
 
 **Note:** Linux builds are not included in releases. Use `build-linux.yml` for Linux testing.
 
+**Note:** `validate-release` reads `plugins.updater.pubkey` and checks a `.sig` for every installer. This fork has removed the updater, so that job fails; use `release-windows.yml` instead.
+
+---
+
+### 7b. **release-windows.yml** - Windows-only Release
+**Purpose:** Build the Windows installers and attach them to a draft GitHub Release
+
+**Key Features:**
+- Follows the `release.yml` flow: create draft release -> build -> upload to the release -> summary
+- Windows only, built through the reusable `build.yml`
+- Unsigned: no certificate or signing secrets needed (SmartScreen warns on first run)
+- Reuses an existing draft for the same version (for example one left by a cancelled `release.yml` run) and clears its old installers, so re-runs don't pile up drafts
+- No `validate-release` / `latest.json` / `.sig` checks; the summary job just confirms exactly one `.msi` and one `-setup.exe` are on the release
+
+**Triggers:**
+- Manual dispatch only. The workflow file must be on the default branch before "Run workflow" appears.
+
+**Use When:**
+- You only need the Windows package
+
+**Outputs:**
+- Draft release `v<version>` (version from `tauri.conf.json`) with an MSI and an NSIS installer. Review it and publish when ready.
+
+**Note:** Fails early if the tag `v<version>` already exists; bump the version in `tauri.conf.json` first.
+
 ---
 
 ### 8. **pr-main-check.yml** - Validation Check
@@ -221,6 +246,10 @@ This document provides a quick overview of all available CI/CD workflows in this
 - All platforms
 - Signing enabled
 - Full verification
+
+### "I only need the Windows package..."
+- **Use `release-windows.yml`** (manual dispatch)
+- Draft release with unsigned MSI + NSIS installers
 
 ### "I'm ready to release..."
 - **Use `release.yml`** (manual dispatch)
