@@ -91,7 +91,7 @@ These features come from Meetily itself:
 
 ## Building from source
 
-This fork does not publish installers; build it yourself on the platform you want to run it on (Tauri doesn't cross-compile installers). You need Rust, Node.js, pnpm 9.15.9 and CMake, plus the platform packages in [BUILDING.md](docs/BUILDING.md).
+Windows installers (unsigned MSI and NSIS) are published on this repository's [Releases](https://github.com/ufolux/meetily-speaker-id/releases) page, built by the **Release - Windows** workflow. For any other platform, build it yourself on the platform you want to run it on (Tauri doesn't cross-compile installers). You need Rust, Node.js, pnpm 9.15.9 and CMake, plus the platform packages in [BUILDING.md](docs/BUILDING.md).
 
 ### Let an AI coding agent build it
 

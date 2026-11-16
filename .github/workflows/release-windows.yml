@@ -113,8 +113,9 @@ jobs:
   release-summary:
     needs: [create-release, build-windows]
     runs-on: ubuntu-latest
+    # Listing the assets of a *draft* release needs contents: write; read gets a 403.
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Check and list release assets
         env:
