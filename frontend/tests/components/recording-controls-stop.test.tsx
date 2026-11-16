@@ -1,7 +1,7 @@
 import React from 'react';
 import { afterAll, afterEach, expect, mock, test } from 'bun:test';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-const originals = await Promise.all(['@tauri-apps/api/core', '@tauri-apps/api/path', '@tauri-apps/api/event', '../../src/contexts/RecordingStateContext', '../../src/lib/analytics', '../../src/components/ui/tooltip'].map(async path =>
+const originals = await Promise.all(['@tauri-apps/api/core', '@tauri-apps/api/path', '@tauri-apps/api/event', '../../src/contexts/RecordingStateContext', '../../src/components/ui/tooltip'].map(async path =>
   [path, { ...await import(path) }] as const));
 afterAll(() => { for (const [path, exports] of originals) mock.module(path, () => exports); });
 
@@ -24,9 +24,6 @@ mock.module('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
   useRecordingState: () => ({ isPaused: false, isStartingRecording: false, isStopping: globalStopping }),
 }));
-mock.module('../../src/lib/analytics', () => ({ default: {
-  trackButtonClick: () => {}, trackTranscriptionSuccess: () => {},
-} }));
 const Container = ({ children }: any) => <div>{children}</div>;
 mock.module('../../src/components/ui/tooltip', () => ({
   Tooltip: Container, TooltipTrigger: Container, TooltipContent: Container, TooltipProvider: Container,

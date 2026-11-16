@@ -9,6 +9,7 @@ This is a fork of [Meetily](https://github.com/Zackriya-Solutions/meetily), the 
 - **[Speaker identification](#speaker-identification):** every transcript line is labelled with its speaker, and you can rename speakers.
 - **[Recording playback](#recording-playback):** play a meeting's recording while the transcript follows along, and click any line to jump to that moment.
 - **[Search](#search-in-transcripts-and-summaries):** find text in a meeting's transcript and its AI summary.
+- **[No background network activity](#privacy-and-network-activity):** no analytics, telemetry or update checks. The only outbound connections are model downloads and the summary provider you choose.
 
 ## Speaker identification
 
@@ -52,12 +53,38 @@ Meetings without a saved recording show no player. Recordings in a format the bu
 - **Transcript.** Click 🔍 at the top of the transcript, or press **⌘F** (Ctrl+F on Windows/Linux). Every match is highlighted, the current one in orange, with a count such as `3/12`. **Enter** goes to the next match, **Shift+Enter** to the previous one, and **Esc** closes the search. Long transcripts are loaded in full first, so no match is missed. Search ignores case and works with Chinese and other non-Latin text.
 - **Summary.** Click 🔍 at the top of the summary, or press **⌘F** while working in the summary. Matches are highlighted without changing the summary, and the results update as you edit or regenerate it. A phrase split across different formatting (for example half of it in bold) isn't found.
 
+## Privacy and network activity
+
+This fork never contacts a server on its own. Upstream analytics (PostHog), the auto-updater, the remote sidebar icon and the ffmpeg auto-installer have been removed.
+
+- **No analytics or telemetry.** Nothing about your usage, devices or meetings is collected or sent, and there is no setting to turn it on.
+- **No update checks.** The app doesn't look for new versions. To update, pull the latest source and rebuild.
+- **Model downloads only.** Transcription, speaker and summary models are fetched from Hugging Face (`huggingface.co`) when you download them, during onboarding or from settings. Nothing about your meetings is sent.
+- **Summary providers are opt-in.** The built-in engine and Ollama run locally. Claude, Groq, OpenRouter, OpenAI and custom OpenAI-compatible servers receive transcript text only if you select one and enter its details. On startup the app checks for a local Ollama at `localhost:11434`.
+- **Locked-down webview.** The window's content security policy only allows connections to the app itself and a local Ollama, so page code can't call out anywhere else.
+- **Links open in your browser.** Links such as the Feedback page are handed to your default browser. The app itself makes no request.
+
+### Check it yourself
+
+While the app is running, list its open network connections:
+
+```bash
+lsof -nP -i -a -p $(pgrep -n meetily)
+```
+
+At rest this prints nothing. During a model download you should see `huggingface.co`, and while generating a summary with a cloud provider you'd see that provider's host. In `tauri:dev` the window also talks to the local Next.js server on port 3118.
+
+### What this doesn't cover
+
+- **Building.** A build still fetches a Google font (`next/font`), an ffmpeg binary (`build.rs`) and ONNX runtime binaries. These happen at build time, not when the app runs.
+- **Release workflows.** The CI files under `.github/workflows` still reference the old updater signing keys and manifest, and would need trimming if you use them.
+
 ## Other features
 
 These features come from Meetily itself:
 
 - Real-time local transcription with **Whisper** or **Parakeet**.
-- AI summaries with **Ollama** (local), Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint.
+- AI summaries with **Ollama** (local), Claude, Groq, OpenRouter, OpenAI, or any OpenAI-compatible endpoint. Cloud providers are opt-in: nothing is sent to them unless you select one and enter a key. This build has no analytics or update checks.
 - Microphone and system-audio capture with mixing.
 - Import existing audio files, and re-transcribe meetings with a different model or language.
 - GPU acceleration: Metal/CoreML on macOS, Vulkan on Windows, configurable source builds on Linux.
