@@ -703,6 +703,12 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            // One-time, lossless remux of existing long recordings so they play in the app
+            // (idempotent: a no-op once everything is migrated).
+            tauri::async_runtime::spawn(audio::audio_migration::migrate_recordings_on_startup(
+                _app.handle().clone(),
+            ));
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {

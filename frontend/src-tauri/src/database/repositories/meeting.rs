@@ -15,6 +15,16 @@ impl MeetingsRepository {
         Ok(meetings)
     }
 
+    /// Distinct recording folders of all meetings that have one.
+    pub async fn get_all_folder_paths(pool: &SqlitePool) -> Result<Vec<std::path::PathBuf>, sqlx::Error> {
+        let paths: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT folder_path FROM meetings WHERE folder_path IS NOT NULL AND TRIM(folder_path) != ''",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(paths.into_iter().map(std::path::PathBuf::from).collect())
+    }
+
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
         if meeting_id.trim().is_empty() {
             return Err(SqlxError::Protocol(

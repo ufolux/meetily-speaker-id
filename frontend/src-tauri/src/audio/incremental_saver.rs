@@ -6,6 +6,7 @@ use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
+use super::audio_migration::{FRAGMENT_DURATION_US, FRAGMENT_MOVFLAGS};
 
 /// Audio data without device type (we only store mixed audio)
 #[derive(Clone)]
@@ -183,6 +184,11 @@ impl IncrementalAudioSaver {
             "-safe", "0",            // Allow absolute paths
             "-i", list_file.to_str().unwrap(),
             "-c", "copy",            // Copy codec - no re-encoding!
+            // Fragmented MP4 keeps the index (moov) tiny. A regular MP4's moov grows with
+            // the recording length and, past ~1 MB (~90 min), the webview can no longer
+            // load it through the asset protocol, so the recording would not play.
+            "-movflags", FRAGMENT_MOVFLAGS,
+            "-frag_duration", FRAGMENT_DURATION_US,
             "-y",                    // Overwrite output file
             output.to_str().unwrap()
         ]);
@@ -316,6 +322,8 @@ pub async fn recover_audio_from_checkpoints(
         "-safe", "0",
         "-i", concat_file_path.to_str().unwrap(),
         "-c", "copy",
+        "-movflags", FRAGMENT_MOVFLAGS, // see merge_checkpoints: keeps long recordings playable
+        "-frag_duration", FRAGMENT_DURATION_US,
         "-y", // Overwrite if exists
         &output_path_str
     ]);
@@ -449,6 +457,7 @@ mod tests {
         // Finalize and verify merge
         let final_path = saver.finalize().await.unwrap();
         assert!(final_path.exists());
+        assert!(super::super::audio_migration::is_fragmented(&final_path));
 
         // Verify checkpoints directory deleted
         assert!(!meeting_folder.join(".checkpoints").exists());
