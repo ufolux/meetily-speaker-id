@@ -480,7 +480,9 @@ pub fn decode_audio_file_with_progress(
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
     // Calculate expected samples for progress tracking
+    // Fragmented MP4 (our recordings) reports n_frames = 0 in the header: treat as unknown.
     let expected_duration = track.codec_params.n_frames
+        .filter(|frames| *frames > 0)
         .map(|frames| frames as f64 / sample_rate as f64);
     let expected_samples = expected_duration
         .map(|dur| (dur * sample_rate as f64 * channels as f64) as usize);
